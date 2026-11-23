@@ -1,0 +1,83 @@
+GPU portability smoke tests - report
+Date:     2026-11-23 16:07 UTC
+Host:     Linux 7.0.0-43-generic x86_64
+Backend:  CUDA
+Compiler: CUDA /usr/local/cuda-13.1/bin/nvcc (Cuda compilation tools, release 13.1, V13.1.115)
+Compiler: CXX /usr/bin/c++ (c++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0)
+Device:   NVIDIA GeForce RTX 4090, sm_89, 128 multiprocessors, 23.5 GB, warp/wavefront 32
+
+Requirements
+  Virtual functions in device code (*)          PASS
+  Device linking across static libraries (*)    PASS
+  Recursion, settable stack size                PASS
+  Single-source C++17, placement new            PASS
+  CUDA-like runtime API                         PASS
+  Atomics on device memory                      PASS
+  FP64                                          PASS
+  Build integration                             PASS
+  (*) prerequisites
+
+Measurements
+  03.recursion.depth_64_stack_default INFO recursion depth 64 with the default stack (1024 bytes): fails, a larger stack is needed
+  03.recursion.depth_256_stack_default INFO recursion depth 256 with the default stack (1024 bytes): fails, a larger stack is needed
+  05.fp64.formula_ulp INFO squared norm a*a+b*b+c*c, max difference to the host: 2 ulp (fma contraction)
+  05.fp64.throughput INFO indicative FMA-chain microbenchmark: FP32 71545 GFLOP/s, FP64 1155 GFLOP/s, FP64/FP32 = 1/61.9
+
+All results
+  08.build.configure PASS cmake configure
+  08.build.t01_virtual PASS built
+  08.build.t02_link PASS built
+  08.build.t03_recursion PASS built
+  08.build.t04_image PASS built
+  08.build.t05_fp64 PASS built
+  08.build.t06_atomics PASS built
+  08.build.t07_runtime PASS built
+  01.virtual.same_kernel PASS construct with placement new and call in one kernel
+  01.virtual.later_kernel PASS 1048576 threads, 3 types interleaved, 2 launches after construction: 0 value / 0 type mismatches
+  01.virtual.nested PASS virtual call from inside an override: 349525 correct
+  01.virtual.destructor PASS virtual destructor called through base pointer
+  02.link.kernel_other_lib PASS object built by a kernel of lib 2, called from a kernel of lib 3: 0 mismatches
+  02.link.device_global PASS atomic counter defined in lib 1, incremented from lib 3: 262144 of 262144
+  02.link.device_function PASS object built through a device function of lib 2 called from lib 3: 0 mismatches
+  02.link.vtable_reference PASS object built in lib 3 with the vtable defined in lib 2: 0 mismatches
+  02.link.host_symbol_other_tu PASS MemcpyToSymbol from the program on a device global of lib 1
+  03.recursion.depth_8_stack_default PASS recursion depth 8 with the default stack (1024 bytes): works
+  03.recursion.stack_limit PASS requested 16384 bytes per thread, got 16384
+  03.recursion.depth_8_stack_set PASS recursion depth 8 through virtual calls, stack 16384 bytes per thread: 0 mismatches
+  03.recursion.depth_64_stack_default INFO recursion depth 64 with the default stack (1024 bytes): fails, a larger stack is needed
+  03.recursion.stack_limit PASS requested 16384 bytes per thread, got 16384
+  03.recursion.depth_64_stack_set PASS recursion depth 64 through virtual calls, stack 16384 bytes per thread: 0 mismatches
+  03.recursion.depth_256_stack_default INFO recursion depth 256 with the default stack (1024 bytes): fails, a larger stack is needed
+  03.recursion.stack_limit PASS requested 16384 bytes per thread, got 16384
+  03.recursion.depth_256_stack_set PASS recursion depth 256 through virtual calls, stack 16384 bytes per thread: 0 mismatches
+  04.image.copy PASS 37 volumes, image of 3552 bytes copied in one call
+  04.image.construct PASS shells constructed in place by one kernel (placement new, device vtables)
+  04.image.locate PASS 258453 points located by walking the device tree: 0 mismatches with the host tree (128304 inside daughters)
+  05.fp64.sqrt PASS correctly rounded double sqrt: 0 of 1048576 differ from the host
+  05.fp64.div PASS correctly rounded double division: 0 of 1048576 differ from the host
+  05.fp64.fma PASS double fma: 0 of 1048576 differ from the host
+  05.fp64.formula_ulp INFO squared norm a*a+b*b+c*c, max difference to the host: 2 ulp (fma contraction)
+  05.fp64.throughput INFO indicative FMA-chain microbenchmark: FP32 71545 GFLOP/s, FP64 1155 GFLOP/s, FP64/FP32 = 1/61.9
+  05.fp64.runs PASS double precision kernels run
+  06.atomics.add32 PASS 4194304 threads on one address: 4194304
+  06.atomics.add64 PASS 64-bit add: 4194304
+  06.atomics.max PASS atomicMax: 4194303
+  06.atomics.cas PASS CAS loop adding doubles, 65536 threads on one address: 65536
+  06.atomics.exch PASS atomicExch
+  06.atomics.spread PASS 1024 addresses, 4096 adds each
+  06.atomics.add_f64 PASS native double atomicAdd: 4194304
+  06.atomics.host_add PASS add on mapped pinned host memory: 65536 of 65536
+  06.atomics.host_sub PASS sub on mapped pinned host memory: 0 left (0 expected)
+  06.atomics.host_or PASS or on mapped pinned host memory: 0xffffffff
+  06.atomics.host_cas PASS CAS on mapped pinned host memory
+  07.runtime.device_query PASS 1 device(s)
+  07.runtime.device INFO NVIDIA GeForce RTX 4090, sm_89, 128 multiprocessors, 23.5 GB, warp/wavefront 32
+  07.runtime.malloc_memcpy PASS Malloc, Memset, Memcpy host/device/device/host
+  07.runtime.streams_events PASS pinned memory, 2 streams, async copies, event dependency, 5.077 ms
+  07.runtime.symbols PASS MemcpyToSymbol / MemcpyFromSymbol
+  07.runtime.launch_error PASS invalid launch reported as: invalid argument
+  07.runtime.shared_memory PASS dynamic shared memory reduction: 1048576
+  07.runtime.printf PASS kernel with printf ran
+  07.runtime.managed PASS MallocManaged written on host, scaled on device, read on host
+  07.runtime.printf_output PASS device printf output reached stdout
+  07.runtime.trap PASS device trap reported to the host as: unspecified launch failure
