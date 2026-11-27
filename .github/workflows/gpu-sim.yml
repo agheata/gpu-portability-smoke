@@ -1,0 +1,94 @@
+name: gpu-sim
+
+# Optional check. The hosted runners have no GPU, so this builds the smoke
+# tests with the CUDA backend and runs them on a simulated NVIDIA H100
+# (https://github.com/pantheongpu/pantheonsim). A simulator cannot reproduce
+# hardware-specific behavior or timing, so it complements runs on real GPUs.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "tests/**"
+      - "common/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gpu:
+    name: Smoke tests (CUDA 13.0 and simulated H100)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Set up the simulated GPU and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@deff5781e8adfd83dec98dd5242dcbc96a564773 # v0.1.10
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+
+      # The simulator runs PTX only and needs a shared CUDA runtime, so the
+      # architecture is set to 90-virtual and the runtime to Shared.
+      - name: Configure and build
+        run: |
+          vgpu run --preload cmake -S . -B build -DGPU_BACKEND=CUDA \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES=90-virtual \
+            -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared
+          vgpu run --preload cmake --build build -j3
+
+      # Each test runs in its own process, as in run.sh. A test fails the job
+      # on a non-zero exit, a FAIL or WARN row, a missing PASS row, a missing
+      # kernel launch in the --counters output, or an unexpected simulator
+      # error. Recursion depth 256 is left out: the simulator stops device
+      # calls nested more than 256 deep, whatever the stack size.
+      - name: Run the smoke tests on the simulated GPU
+        run: |
+          set +e -u
+          fail=0
+          # t <PASS rows> <kernel> <allowed simulator error, or -> <program> [args]
+          t() {
+            local want=$1 kernel=$2 allow=$3 rc n
+            shift 3
+            echo "::group::$*"
+            timeout -s KILL 600 vgpu run --gpu nvidia/h100 --counters "build/bin/$@" > out.log 2>&1
+            rc=$?
+            grep -v '^    ' out.log
+            echo "::endgroup::"
+            n=$(grep -c '^RESULT [^ ]* PASS ' out.log)
+            if [ "$rc" -ne 0 ]; then echo "::error::$*: exit code $rc"; fail=1; fi
+            if grep -Eq '^RESULT [^ ]* (FAIL|WARN) ' out.log; then echo "::error::$*: FAIL or WARN rows"; fail=1; fi
+            if [ "$n" -ne "$want" ]; then echo "::error::$*: $n PASS rows, expected $want"; fail=1; fi
+            if grep -Eiq 'no (cuda[- ]capable |usable )?device|skipp' out.log; then echo "::error::$*: no device or skipped"; fail=1; fi
+            if grep 'VirtualGPU error' out.log | grep -vF -- "$allow" | grep -q .; then
+              echo "::error::$*: unexpected simulator error"; fail=1
+            fi
+            # --counters prints one line per simulated kernel launch.
+            if [ "$kernel" != - ] && ! grep -F '[vgpu][counters]' out.log | grep -Fq " $kernel "; then
+              echo "::error::$*: no launch of $kernel"; fail=1
+            fi
+          }
+          t 4 _Z8EvaluatePKP5ShapePKdPdPii - 01_virtual
+          t 5 _Z8EvaluatePKP5ShapePKdPdi - 02_link
+          t 1 _Z8EvaluatePKPK4NodePKdPdi - 03_recursion 8 0
+          for d in 8 64 128; do
+            t 2 _Z8EvaluatePKPK4NodePKdPdi - 03_recursion "$d" 16384
+          done
+          t 3 _Z12LocatePointsPK6VolumePKdPii - 04_image
+          t 4 _Z8BasicOpsPKdS0_S0_PdS1_S1_S1_i - 05_fp64
+          t 11 _Z13DeviceAtomicsP8Countersi - 06_atomics
+          # The invalid launch (block size 1048576) is expected to be refused.
+          t 8 _Z5ScalePddi 'block dim 0 is 1048576' 07_runtime
+          grep -q 'device printf ok' out.log || { echo "::error::device printf output not seen"; fail=1; }
+          # A device trap must come back to the host as an error.
+          t 1 - 'VirtualGPU error [trap]' 07_runtime trap
+          exit $fail
